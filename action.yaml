@@ -1,0 +1,68 @@
+name: "GoLang Build"
+description: "Builds and"
+inputs:
+  aws_region:  # id of input
+    description: 'AWS Region of ECR registry'
+    required: true
+  aws_role: # id of input
+    description: 'AWS Role to assume for ECR registry'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v4
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.22
+        cache-dependency-path: ./go.sum
+
+    - name: Build
+      env:
+        CGO_ENABLED: "0"
+        GOOS: linux
+        GOARCH: amd64
+      shell: bash
+      run: go build -mod vendor -o ./build/ ./cmd/...
+
+    - name: Test
+      shell: bash
+      run: go test -v ./cmd/...
+
+    - name: Configure AWS Credentials # https://github.com/aws-actions/configure-aws-credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: ${{ inputs.aws_region }}
+        role-to-assume: ${{ inputs.aws_role }}
+
+    - name: Fetch builds
+      uses: actions/download-artifact@v4
+      with:
+        name: golang_builds
+
+    - name: Login to Amazon ECR
+      id: ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set outputs
+      id: vars
+      shell: bash
+      run: |
+        echo "sha_short=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+        echo "github_repo=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+        echo "timestamp=$(date +'%s')" >> $GITHUB_OUTPUT
+
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      env:
+        REPO: "${{ steps.login-ecr.outputs.registry }}/${{ steps.vars.outputs.github_repo }}"
+      with:
+        file: deployments/docker/Dockerfile
+        context: .
+        push: true
+        tags: |
+          "${{ env.REPO }}:${{ github.ref_name }}-${{ steps.vars.outputs.sha_short }}"
+          "${{ env.REPO }}:${{ github.ref_name }}-${{ steps.vars.outputs.timestamp }}-${{ steps.vars.outputs.sha_short }}"
